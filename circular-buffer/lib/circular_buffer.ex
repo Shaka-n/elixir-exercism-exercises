@@ -3,40 +3,81 @@ defmodule CircularBuffer do
   An API to a stateful process that fills and empties a circular buffer
   """
   use GenServer
+  @doc """
+  Initializes buffer with max capacity, a read index,
+  a write index, and a data store.
+  """
   @impl true
   def init(capacity) do
-    {:ok, {capacity, []}}
+    {:ok, %{cap: capacity, next_read: 1, next_write: 1, slots: capacity, store: init_store(capacity)}} 
   end
+
+  defp init_store(capacity) do
+    Enum.reduce(1..capacity, %{}, fn x, acc -> Map.put(acc, x, nil) end)
+  end
+
   @impl true
-  def handle_call(:read, _from, state) do
-    case state do
-      {_capacity, []} ->
-        {:reply, {:error, :empty}, []}
-      {capacity, [oldest | tail]} ->
-        {:reply, {:ok, oldest}, {capacity, tail}}
+  def handle_call(:read, _from, %{next_read: next_read, store: store} = state) do
+    case store[next_read] do
+      nil ->
+        {:reply, {:error, :empty}, state}
+      value ->
+        {:reply, {:ok, value}, update_read(state)}
     end
   end
+
+
   @impl true
-  def handle_call({:write, item}, _from, {capacity, list} = _state) do
-    if length(list) == capacity do
-        {:reply, {:error, :full}, list}
+  def handle_call({:write, item}, _from, %{slots: slots} = state) do
+    if slots == 0 do
+      {:reply, {:error, :full}, state}
     else
-      {:reply, :ok, {capacity, insert(list, item)}}
+      {:reply, :ok, update_write(state, item)}
     end
   end
+
   @impl true
-  def handle_call({:overwrite, item}, _from, {capacity, [ _head | tail] = list} = _state) do
-    if length(list) == capacity do
-      {:reply, :ok, {capacity, insert(tail, item)}}
+  def handle_call({:overwrite, item}, _from, %{slots: slots} = state) do
+    if slots == 0 do
+      {:reply, :ok, update_overwrite(state, item)}
     else
-      {:reply, :ok, {capacity, insert(list, item)}}
+      {:reply, :ok, update_write(state, item)}
     end
   end
-  defp insert([], item), do: [item]
-  defp insert([head | []], item), do: [head| [item | []]]
-  defp insert( [head | tail] = _list, item), do: [head | insert(tail, item)]
+
   @impl true
-  def handle_cast(:clear, {capacity, _list} = _state), do: {:noreply, {capacity, []}}
+  def handle_cast(:clear, state), do: {:noreply, %{state | next_read: 1, next_write: 1, slots: state.cap, store: init_store(state.cap)}} 
+
+  defp update_read(%{cap: cap,
+    next_read: current_next_read,
+    slots: slots,
+    store: store} = state) 
+  do
+      if current_next_read == cap do
+      %{state | next_read: 1, slots: slots + 1, store: %{store | current_next_read => nil}}
+    else
+      %{state | next_read: current_next_read + 1, slots: + 1, store: %{store | current_next_read => nil}}
+    end
+  end
+
+  defp update_write(%{cap: cap, next_write: next_write, slots: slots, store: store} = state, item) do
+    if next_write == cap do
+      %{state | next_write: 1, slots: slots - 1, store: %{ store | next_write => item}}
+    else
+      %{state | next_write: next_write + 1, slots: slots - 1, store: %{store | next_write => item}}
+    end
+  end
+
+  defp update_overwrite(%{cap: cap, next_write: next_write, store: store, next_read: next_read}= state, item)do
+    incoming_next_read = if next_read + 1 > cap, do: 1, else: next_read + 1
+    if next_write == cap do
+      %{state | next_read: incoming_next_read, next_write: 1, store: %{ store | next_write => item}}
+    else
+      %{state | next_read: incoming_next_read, next_write: next_write + 1, store: %{store | next_write => item}}
+    end
+  end
+
+
   @doc """
   Create a new buffer of a given capacity
   """
